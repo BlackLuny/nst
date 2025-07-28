@@ -80,33 +80,43 @@ impl TcpStabilityTest {
         let mut rtt_sum = Duration::ZERO;
         let mut stream = None;
         let mut last_connection_attempt = Instant::now();
+        let mut connection_broken = false;
+        
+        // Establish initial connection
+        info!("Establishing initial connection...");
+        match client.connect(&self.target_addr).await {
+            Ok(tcp_stream) => {
+                stream = Some(tcp_stream);
+                info!("Initial connection established successfully");
+            }
+            Err(e) => {
+                return Err(NetworkTestError::Connection(format!("Failed to establish initial connection: {}", e)));
+            }
+        }
         
         while Instant::now() < end_time {
-            if stream.is_none() {
+            // Only reconnect if connection was broken
+            if stream.is_none() && connection_broken {
                 let connection_start = Instant::now();
                 
                 match client.connect(&self.target_addr).await {
                     Ok(new_stream) => {
                         stream = Some(new_stream);
+                        result.reconnections += 1;
+                        let downtime = connection_start - last_connection_attempt;
+                        result.total_downtime += downtime;
                         
-                        if result.total_heartbeats > 0 {
-                            result.reconnections += 1;
-                            let downtime = connection_start - last_connection_attempt;
-                            result.total_downtime += downtime;
-                            
-                            result.connection_drops.push(ConnectionDrop {
-                                timestamp: last_connection_attempt,
-                                duration: downtime,
-                                reason: "Connection lost".to_string(),
-                            });
-                            
-                            info!("Reconnected after {:?} downtime", downtime);
-                        } else {
-                            info!("Initial connection established");
-                        }
+                        result.connection_drops.push(ConnectionDrop {
+                            timestamp: last_connection_attempt,
+                            duration: downtime,
+                            reason: "Connection lost - reconnected".to_string(),
+                        });
+                        
+                        info!("Reconnected after {:?} downtime", downtime);
+                        connection_broken = false;
                     }
                     Err(e) => {
-                        warn!("Failed to connect: {}", e);
+                        warn!("Failed to reconnect: {}", e);
                         sleep(Duration::from_secs(1)).await;
                         continue;
                     }
@@ -141,14 +151,16 @@ impl TcpStabilityTest {
                     }
                     Ok(Err(e)) => {
                         result.failed_heartbeats += 1;
-                        warn!("Heartbeat {} failed: {}", result.total_heartbeats, e);
+                        warn!("Heartbeat {} failed, connection broken: {}", result.total_heartbeats, e);
                         stream = None;
+                        connection_broken = true;
                         last_connection_attempt = Instant::now();
                     }
                     Err(_) => {
                         result.failed_heartbeats += 1;
-                        warn!("Heartbeat {} timed out", result.total_heartbeats);
+                        warn!("Heartbeat {} timed out, connection may be broken", result.total_heartbeats);
                         stream = None;
+                        connection_broken = true;
                         last_connection_attempt = Instant::now();
                     }
                 }
