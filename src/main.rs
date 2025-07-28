@@ -15,6 +15,9 @@ struct Cli {
     
     #[arg(short, long)]
     verbose: bool,
+    
+    #[arg(short = 'j', long, default_value = "1")]
+    parallel: usize,
 }
 
 #[derive(Subcommand)]
@@ -85,20 +88,20 @@ async fn main() -> Result<()> {
     
     match cli.command {
         Commands::TcpStability { proxy, target, interval, duration } => {
-            info!("Running TCP stability test");
-            run_tcp_stability_test(&proxy, &target, interval, duration).await?;
+            info!("Running TCP stability test with {} parallel instances", cli.parallel);
+            run_tcp_stability_test_parallel(&proxy, &target, interval, duration, cli.parallel).await?;
         }
         Commands::Bandwidth { proxy, target, size, duration } => {
-            info!("Running bandwidth test");
-            run_bandwidth_test(&proxy, &target, size, duration).await?;
+            info!("Running bandwidth test with {} parallel instances", cli.parallel);
+            run_bandwidth_test_parallel(&proxy, &target, size, duration, cli.parallel).await?;
         }
         Commands::ConnectionPerf { proxy, target, concurrent, total } => {
-            info!("Running connection performance test");
-            run_connection_perf_test(&proxy, &target, concurrent, total).await?;
+            info!("Running connection performance test with {} parallel instances", cli.parallel);
+            run_connection_perf_test_parallel(&proxy, &target, concurrent, total, cli.parallel).await?;
         }
         Commands::All { proxy } => {
-            info!("Running all tests");
-            run_all_tests(&proxy).await?;
+            info!("Running all tests with {} parallel instances", cli.parallel);
+            run_all_tests_parallel(&proxy, cli.parallel).await?;
         }
     }
     
@@ -106,33 +109,120 @@ async fn main() -> Result<()> {
     Ok(())
 }
 
-async fn run_tcp_stability_test(proxy: &str, target: &str, interval: u64, duration: u64) -> Result<()> {
+async fn run_tcp_stability_test_parallel(proxy: &str, target: &str, interval: u64, duration: u64, parallel: usize) -> Result<()> {
     use network_stable_test::tests::tcp_stability::TcpStabilityTest;
+    use tokio::task::JoinSet;
     
-    let test = TcpStabilityTest::new(proxy, target, interval, duration);
-    test.run().await
+    if parallel == 1 {
+        let test = TcpStabilityTest::new(proxy, target, interval, duration);
+        return test.run().await;
+    }
+    
+    let mut join_set = JoinSet::new();
+    
+    for i in 0..parallel {
+        let proxy = proxy.to_string();
+        let target = target.to_string();
+        
+        join_set.spawn(async move {
+            info!("Starting TCP stability test instance {}", i + 1);
+            let test = TcpStabilityTest::new(&proxy, &target, interval, duration);
+            test.run().await
+        });
+    }
+    
+    while let Some(result) = join_set.join_next().await {
+        match result {
+            Ok(test_result) => test_result?,
+            Err(join_error) => {
+                return Err(network_stable_test::NetworkTestError::Connection(
+                    format!("Task join error: {}", join_error)
+                ));
+            }
+        }
+    }
+    
+    Ok(())
 }
 
-async fn run_bandwidth_test(proxy: &str, target: &str, size: usize, duration: u64) -> Result<()> {
+async fn run_bandwidth_test_parallel(proxy: &str, target: &str, size: usize, duration: u64, parallel: usize) -> Result<()> {
     use network_stable_test::tests::bandwidth::BandwidthTest;
+    use tokio::task::JoinSet;
     
-    let test = BandwidthTest::new(proxy, target, size, duration);
-    test.run().await
+    if parallel == 1 {
+        let test = BandwidthTest::new(proxy, target, size, duration);
+        return test.run().await;
+    }
+    
+    let mut join_set = JoinSet::new();
+    
+    for i in 0..parallel {
+        let proxy = proxy.to_string();
+        let target = target.to_string();
+        
+        join_set.spawn(async move {
+            info!("Starting bandwidth test instance {}", i + 1);
+            let test = BandwidthTest::new(&proxy, &target, size, duration);
+            test.run().await
+        });
+    }
+    
+    while let Some(result) = join_set.join_next().await {
+        match result {
+            Ok(test_result) => test_result?,
+            Err(join_error) => {
+                return Err(network_stable_test::NetworkTestError::Connection(
+                    format!("Task join error: {}", join_error)
+                ));
+            }
+        }
+    }
+    
+    Ok(())
 }
 
-async fn run_connection_perf_test(proxy: &str, target: &str, concurrent: usize, total: usize) -> Result<()> {
+async fn run_connection_perf_test_parallel(proxy: &str, target: &str, concurrent: usize, total: usize, parallel: usize) -> Result<()> {
     use network_stable_test::tests::connection_perf::ConnectionPerfTest;
+    use tokio::task::JoinSet;
     
-    let test = ConnectionPerfTest::new(proxy, target, concurrent, total);
-    test.run().await
+    if parallel == 1 {
+        let test = ConnectionPerfTest::new(proxy, target, concurrent, total);
+        return test.run().await;
+    }
+    
+    let mut join_set = JoinSet::new();
+    
+    for i in 0..parallel {
+        let proxy = proxy.to_string();
+        let target = target.to_string();
+        
+        join_set.spawn(async move {
+            info!("Starting connection performance test instance {}", i + 1);
+            let test = ConnectionPerfTest::new(&proxy, &target, concurrent, total);
+            test.run().await
+        });
+    }
+    
+    while let Some(result) = join_set.join_next().await {
+        match result {
+            Ok(test_result) => test_result?,
+            Err(join_error) => {
+                return Err(network_stable_test::NetworkTestError::Connection(
+                    format!("Task join error: {}", join_error)
+                ));
+            }
+        }
+    }
+    
+    Ok(())
 }
 
-async fn run_all_tests(proxy: &str) -> Result<()> {
+async fn run_all_tests_parallel(proxy: &str, parallel: usize) -> Result<()> {
     info!("Running comprehensive network stability tests");
     
-    run_tcp_stability_test(proxy, "8.8.8.8:53", 30, 300).await?;
-    run_bandwidth_test(proxy, "httpbin.org:80", 1024, 60).await?;
-    run_connection_perf_test(proxy, "8.8.8.8:53", 10, 100).await?;
+    run_tcp_stability_test_parallel(proxy, "8.8.8.8:53", 30, 300, parallel).await?;
+    run_bandwidth_test_parallel(proxy, "httpbin.org:80", 1024, 60, parallel).await?;
+    run_connection_perf_test_parallel(proxy, "8.8.8.8:53", 10, 100, parallel).await?;
     
     Ok(())
 }
