@@ -18,12 +18,12 @@ pub async fn handle_client(mut stream: TcpStream) -> Result<(), Box<dyn std::err
                 let line = line.trim();
                 if line == "PING" {
                     let response = b"PONG\n";
-                    
+
                     if let Err(e) = writer.write_all(response).await {
                         warn!("Failed to send PONG response: {}", e);
                         break;
                     }
-                    
+
                     debug!("Responded to PING with PONG");
                 } else {
                     warn!("Unknown jitter test command: {}", line);

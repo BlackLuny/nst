@@ -1,10 +1,10 @@
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::TcpStream;
-use tracing::{debug, warn, error};
+use tracing::{debug, error, warn};
 
 pub async fn handle_client(mut stream: TcpStream) -> Result<(), Box<dyn std::error::Error>> {
     let mut buffer = [0u8; 1024];
-    
+
     loop {
         match stream.read(&mut buffer).await {
             Ok(0) => {
@@ -14,18 +14,21 @@ pub async fn handle_client(mut stream: TcpStream) -> Result<(), Box<dyn std::err
             Ok(n) => {
                 let request = String::from_utf8_lossy(&buffer[..n]);
                 let lines: Vec<&str> = request.lines().collect();
-                
+
                 if lines.is_empty() {
                     continue;
                 }
-                
+
                 let request_line = lines[0];
                 debug!("Received request: {}", request_line);
 
-                if request_line.starts_with("GET /stream-bytes/") {
-                    let size_str = &request_line[18..].split_whitespace().next().unwrap_or("1024");
+                if let Some(size_str) = request_line.strip_prefix("GET /stream-bytes/") {
+                    let size_str = size_str
+                        .split_whitespace()
+                        .next()
+                        .unwrap_or("1024");
                     let size: usize = size_str.parse().unwrap_or(1024);
-                    
+
                     if let Err(e) = handle_get_stream_bytes(&mut stream, size).await {
                         error!("Error handling GET request: {}", e);
                         break;
@@ -65,13 +68,12 @@ async fn handle_get_stream_bytes(
 
     // Send HTTP response
     let response_header = format!(
-        "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: keep-alive\r\n\r\n",
-        size
+        "HTTP/1.1 200 OK\r\nContent-Length: {size}\r\nConnection: keep-alive\r\n\r\n"
     );
-    
+
     stream.write_all(response_header.as_bytes()).await?;
     stream.write_all(&data).await?;
-    
+
     debug!("Sent {} bytes of data", size);
     Ok(())
 }
@@ -91,13 +93,16 @@ async fn handle_post_request(
     }
 
     // For simplicity, assume POST body follows immediately in the same buffer
-    // In a real implementation, you'd need to handle cases where the body 
+    // In a real implementation, you'd need to handle cases where the body
     // might come in separate reads
-    debug!("Received POST request with content-length: {}", content_length);
+    debug!(
+        "Received POST request with content-length: {}",
+        content_length
+    );
 
     // Send response
     let response = "HTTP/1.1 200 OK\r\nContent-Length: 0\r\nConnection: keep-alive\r\n\r\n";
     stream.write_all(response.as_bytes()).await?;
-    
+
     Ok(())
 }

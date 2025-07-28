@@ -1,5 +1,5 @@
-use serde::{Deserialize, Serialize};
 use crate::Result;
+use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Config {
@@ -137,22 +137,26 @@ impl Default for Config {
 
 impl Config {
     pub fn from_file(path: &str) -> Result<Self> {
-        let content = std::fs::read_to_string(path)
-            .map_err(|e| crate::NetworkTestError::Config(format!("Failed to read config file: {}", e)))?;
-        
-        let config: Config = serde_json::from_str(&content)
-            .map_err(|e| crate::NetworkTestError::Config(format!("Failed to parse config file: {}", e)))?;
-        
+        let content = std::fs::read_to_string(path).map_err(|e| {
+            crate::NetworkTestError::Config(format!("Failed to read config file: {e}"))
+        })?;
+
+        let config: Config = serde_json::from_str(&content).map_err(|e| {
+            crate::NetworkTestError::Config(format!("Failed to parse config file: {e}"))
+        })?;
+
         Ok(config)
     }
-    
+
     pub fn to_file(&self, path: &str) -> Result<()> {
-        let content = serde_json::to_string_pretty(self)
-            .map_err(|e| crate::NetworkTestError::Config(format!("Failed to serialize config: {}", e)))?;
-        
-        std::fs::write(path, content)
-            .map_err(|e| crate::NetworkTestError::Config(format!("Failed to write config file: {}", e)))?;
-        
+        let content = serde_json::to_string_pretty(self).map_err(|e| {
+            crate::NetworkTestError::Config(format!("Failed to serialize config: {e}"))
+        })?;
+
+        std::fs::write(path, content).map_err(|e| {
+            crate::NetworkTestError::Config(format!("Failed to write config file: {e}"))
+        })?;
+
         Ok(())
     }
 }

@@ -1,14 +1,14 @@
 use clap::{Parser, ValueEnum};
 use std::net::SocketAddr;
 use tokio::signal;
-use tracing::{info, error, Level};
+use tracing::{error, info, Level};
 use tracing_subscriber::FmtSubscriber;
 
-mod tcp_stability_server;
 mod bandwidth_server;
 mod connection_perf_server;
 mod dns_stability_server;
 mod network_jitter_server;
+mod tcp_stability_server;
 
 #[derive(Parser)]
 #[command(name = "nst-server")]
@@ -62,17 +62,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     let args = Args::parse();
 
     // Initialize tracing
-    let level = if args.verbose { Level::DEBUG } else { Level::INFO };
-    let subscriber = FmtSubscriber::builder()
-        .with_max_level(level)
-        .finish();
+    let level = if args.verbose {
+        Level::DEBUG
+    } else {
+        Level::INFO
+    };
+    let subscriber = FmtSubscriber::builder().with_max_level(level).finish();
     tracing::subscriber::set_global_default(subscriber)?;
 
     info!("Starting NST Server");
     info!("Mode: {:?}", args.mode);
 
     let _base_addr = format!("{}:{}", args.host, args.port);
-    
+
     match args.mode {
         ServerMode::All => {
             start_all_servers(&args.host, args.port).await?;
@@ -104,11 +106,15 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 async fn start_all_servers(host: &str, base_port: u16) -> Result<(), Box<dyn std::error::Error>> {
     info!("Starting all NST test servers");
-    
+
     let servers = vec![
         (base_port + 1, ServerType::TcpStability, "TCP Stability"),
         (base_port + 2, ServerType::Bandwidth, "Bandwidth"),
-        (base_port + 3, ServerType::ConnectionPerf, "Connection Performance"),
+        (
+            base_port + 3,
+            ServerType::ConnectionPerf,
+            "Connection Performance",
+        ),
         (base_port + 4, ServerType::DnsStability, "DNS Stability"),
         (base_port + 5, ServerType::NetworkJitter, "Network Jitter"),
     ];
@@ -116,7 +122,7 @@ async fn start_all_servers(host: &str, base_port: u16) -> Result<(), Box<dyn std
     let mut tasks = vec![];
 
     for (port, server_type, name) in servers {
-        let addr: SocketAddr = format!("{}:{}", host, port).parse()?;
+        let addr: SocketAddr = format!("{host}:{port}").parse()?;
         info!("Starting {} server on {}", name, addr);
 
         let task = tokio::spawn(async move {
@@ -149,40 +155,59 @@ async fn start_all_servers(host: &str, base_port: u16) -> Result<(), Box<dyn std
     Ok(())
 }
 
-async fn start_server(addr: SocketAddr, server_type: ServerType) -> Result<(), Box<dyn std::error::Error>> {
-    use tokio::net::TcpListener;
+async fn start_server(
+    addr: SocketAddr,
+    server_type: ServerType,
+) -> Result<(), Box<dyn std::error::Error>> {
+    match server_type {
+        ServerType::DnsStability => {
+            dns_stability_server::run_dns_server(addr.port())
+                .await
+                .map_err(|e| format!("DNS server error: {e}"))?;
+            Ok(())
+        }
+        _ => {
+            use tokio::net::TcpListener;
 
-    let listener = TcpListener::bind(addr).await?;
-    info!("Server listening on {} for {:?}", addr, server_type);
+            let listener = TcpListener::bind(addr).await?;
+            info!("Server listening on {} for {:?}", addr, server_type);
 
-    loop {
-        match listener.accept().await {
-            Ok((stream, peer_addr)) => {
-                info!("New connection from {} to {:?} server", peer_addr, server_type);
-                
-                let server_type = server_type.clone();
-                tokio::spawn(async move {
-                    if let Err(e) = handle_connection(stream, server_type).await {
-                        error!("Error handling connection from {}: {}", peer_addr, e);
+            loop {
+                match listener.accept().await {
+                    Ok((stream, peer_addr)) => {
+                        info!(
+                            "New connection from {} to {:?} server",
+                            peer_addr, server_type
+                        );
+
+                        let server_type = server_type.clone();
+                        tokio::spawn(async move {
+                            if let Err(e) = handle_connection(stream, server_type).await {
+                                error!("Error handling connection from {}: {}", peer_addr, e);
+                            }
+                        });
                     }
-                });
-            }
-            Err(e) => {
-                error!("Failed to accept connection: {}", e);
+                    Err(e) => {
+                        error!("Failed to accept connection: {}", e);
+                    }
+                }
             }
         }
     }
 }
 
 async fn handle_connection(
-    stream: tokio::net::TcpStream, 
-    server_type: ServerType
+    stream: tokio::net::TcpStream,
+    server_type: ServerType,
 ) -> Result<(), Box<dyn std::error::Error>> {
     match server_type {
         ServerType::TcpStability => tcp_stability_server::handle_client(stream).await,
         ServerType::Bandwidth => bandwidth_server::handle_client(stream).await,
         ServerType::ConnectionPerf => connection_perf_server::handle_client(stream).await,
-        ServerType::DnsStability => dns_stability_server::handle_client(stream).await,
         ServerType::NetworkJitter => network_jitter_server::handle_client(stream).await,
+        ServerType::DnsStability => {
+            // DNS server is handled separately as UDP, this should never be reached
+            Ok(())
+        }
     }
 }

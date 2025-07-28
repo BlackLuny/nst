@@ -16,15 +16,14 @@ pub async fn handle_client(mut stream: TcpStream) -> Result<(), Box<dyn std::err
             }
             Ok(_) => {
                 let line = line.trim();
-                if line.starts_with("PING-") {
-                    let number = &line[5..];
-                    let response = format!("PONG-{}\n", number);
-                    
+                if let Some(number) = line.strip_prefix("PING-") {
+                    let response = format!("PONG-{number}\n");
+
                     if let Err(e) = writer.write_all(response.as_bytes()).await {
                         warn!("Failed to send response: {}", e);
                         break;
                     }
-                    
+
                     debug!("Responded to {}", line);
                 } else {
                     warn!("Unknown command: {}", line);

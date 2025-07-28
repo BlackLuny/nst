@@ -1,13 +1,13 @@
 pub mod config;
-pub mod socks5;
-pub mod tests;
 pub mod metrics;
 pub mod report;
+pub mod socks5;
+pub mod tests;
 
 pub use config::Config;
-pub use socks5::Socks5Client;
 pub use metrics::Metrics;
 pub use report::Report;
+pub use socks5::Socks5Client;
 
 #[derive(Debug, thiserror::Error)]
 pub enum NetworkTestError {
