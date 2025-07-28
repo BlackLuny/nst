@@ -10,6 +10,10 @@ license = "MIT"
 name = "nst"
 path = "src/main.rs"
 
+[[bin]]
+name = "nst-server"
+path = "src/server/main.rs"
+
 [dependencies]
 tokio = { version = "1.0", features = ["full"] }
 clap = { version = "4.0", features = ["derive"] }
