@@ -1,6 +1,7 @@
 use crate::{NetworkTestError, Result, Socks5Client};
 use futures::future::join_all;
 use std::time::{Duration, Instant};
+use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::time::{sleep, timeout};
 use tracing::{debug, info};
 
@@ -18,10 +19,14 @@ pub struct ConnectionPerfResult {
     pub successful_connections: usize,
     pub failed_connections: usize,
     pub connection_times: Vec<Duration>,
+    pub heartbeat_times: Vec<Duration>,
+    pub total_times: Vec<Duration>,
     pub socks5_handshake_times: Vec<Duration>,
     pub target_connect_times: Vec<Duration>,
     pub concurrent_test_results: Vec<ConcurrentTestResult>,
     pub average_connection_time: Duration,
+    pub average_heartbeat_time: Duration,
+    pub average_total_time: Duration,
     pub min_connection_time: Duration,
     pub max_connection_time: Duration,
     pub connection_success_rate: f64,
@@ -40,6 +45,8 @@ pub struct ConcurrentTestResult {
 struct ConnectionAttempt {
     pub success: bool,
     pub total_time: Duration,
+    pub connection_time: Option<Duration>,
+    pub heartbeat_time: Option<Duration>,
     pub socks5_time: Option<Duration>,
     pub target_time: Option<Duration>,
     pub _error: Option<String>,
@@ -93,6 +100,16 @@ impl ConnectionPerfTest {
 
         let connection_times: Vec<Duration> = sequential_results
             .iter()
+            .filter_map(|r| r.connection_time)
+            .collect();
+
+        let heartbeat_times: Vec<Duration> = sequential_results
+            .iter()
+            .filter_map(|r| r.heartbeat_time)
+            .collect();
+
+        let total_times: Vec<Duration> = sequential_results
+            .iter()
             .filter(|r| r.success)
             .map(|r| r.total_time)
             .collect();
@@ -109,6 +126,18 @@ impl ConnectionPerfTest {
 
         let average_connection_time = if !connection_times.is_empty() {
             connection_times.iter().sum::<Duration>() / connection_times.len() as u32
+        } else {
+            Duration::ZERO
+        };
+
+        let average_heartbeat_time = if !heartbeat_times.is_empty() {
+            heartbeat_times.iter().sum::<Duration>() / heartbeat_times.len() as u32
+        } else {
+            Duration::ZERO
+        };
+
+        let average_total_time = if !total_times.is_empty() {
+            total_times.iter().sum::<Duration>() / total_times.len() as u32
         } else {
             Duration::ZERO
         };
@@ -135,10 +164,14 @@ impl ConnectionPerfTest {
             successful_connections,
             failed_connections,
             connection_times,
+            heartbeat_times,
+            total_times,
             socks5_handshake_times,
             target_connect_times,
             concurrent_test_results: concurrent_results,
             average_connection_time,
+            average_heartbeat_time,
+            average_total_time,
             min_connection_time,
             max_connection_time,
             connection_success_rate,
@@ -239,16 +272,46 @@ impl ConnectionPerfTest {
         let timestamp = start_time;
 
         match timeout(Duration::from_secs(15), client.connect(target_addr)).await {
-            Ok(Ok(_stream)) => {
-                let total_time = start_time.elapsed();
+            Ok(Ok(mut stream)) => {
+                let connection_time = start_time.elapsed();
+                debug!("Connection established in {:?}", connection_time);
 
-                ConnectionAttempt {
-                    success: true,
-                    total_time,
-                    socks5_time: Some(total_time),
-                    target_time: None,
-                    _error: None,
-                    _timestamp: timestamp,
+                // Send heartbeat and measure response time
+                let heartbeat_start = Instant::now();
+                let heartbeat_result = Self::send_heartbeat(&mut stream).await;
+                let heartbeat_time = heartbeat_start.elapsed();
+                
+                match heartbeat_result {
+                    Ok(_) => {
+                        let total_time = start_time.elapsed();
+                        debug!("Heartbeat completed in {:?}, total time: {:?}", heartbeat_time, total_time);
+
+                        ConnectionAttempt {
+                            success: true,
+                            total_time,
+                            connection_time: Some(connection_time),
+                            heartbeat_time: Some(heartbeat_time),
+                            socks5_time: Some(connection_time),
+                            target_time: None,
+                            _error: None,
+                            _timestamp: timestamp,
+                        }
+                    }
+                    Err(e) => {
+                        let total_time = start_time.elapsed();
+                        debug!("Heartbeat failed: {}", e);
+
+                        ConnectionAttempt {
+                            success: false,
+                            total_time,
+                            connection_time: Some(connection_time),
+                            heartbeat_time: None,
+                            socks5_time: Some(connection_time),
+                            target_time: None,
+                            _error: Some(format!("Heartbeat failed: {}", e)),
+                            _timestamp: timestamp,
+                        }
+                    }
                 }
             }
             Ok(Err(e)) => {
@@ -257,6 +320,8 @@ impl ConnectionPerfTest {
                 ConnectionAttempt {
                     success: false,
                     total_time,
+                    connection_time: None,
+                    heartbeat_time: None,
                     socks5_time: None,
                     target_time: None,
                     _error: Some(e.to_string()),
@@ -269,12 +334,40 @@ impl ConnectionPerfTest {
                 ConnectionAttempt {
                     success: false,
                     total_time,
+                    connection_time: None,
+                    heartbeat_time: None,
                     socks5_time: None,
                     target_time: None,
                     _error: Some("Connection timeout".to_string()),
                     _timestamp: timestamp,
                 }
             }
+        }
+    }
+
+    async fn send_heartbeat(stream: &mut tokio::net::TcpStream) -> Result<()> {
+        // Send PING message
+        let ping_message = b"PING\n";
+        timeout(Duration::from_secs(5), stream.write_all(ping_message))
+            .await
+            .map_err(|_| NetworkTestError::Timeout("Heartbeat send timeout".to_string()))?
+            .map_err(NetworkTestError::Io)?;
+
+        // Read PONG response
+        let mut buffer = [0u8; 64];
+        let bytes_read = timeout(Duration::from_secs(5), stream.read(&mut buffer))
+            .await
+            .map_err(|_| NetworkTestError::Timeout("Heartbeat response timeout".to_string()))?
+            .map_err(NetworkTestError::Io)?;
+
+        let response = std::str::from_utf8(&buffer[..bytes_read])
+            .map_err(|e| NetworkTestError::Connection(format!("Invalid response: {}", e)))?
+            .trim();
+
+        if response == "PONG" {
+            Ok(())
+        } else {
+            Err(NetworkTestError::Connection(format!("Expected PONG, got: {}", response)))
         }
     }
 
@@ -321,6 +414,36 @@ impl ConnectionPerfTest {
             println!();
         }
 
+        if !result.heartbeat_times.is_empty() {
+            println!("Heartbeat Timing Statistics:");
+            println!(
+                "  Average Heartbeat Time: {:?}",
+                result.average_heartbeat_time
+            );
+
+            let median_heartbeat = self.calculate_median(&result.heartbeat_times);
+            println!("  Median Heartbeat Time: {median_heartbeat:?}");
+
+            let p95_heartbeat = self.calculate_percentile(&result.heartbeat_times, 95.0);
+            println!("  95th Percentile: {p95_heartbeat:?}");
+            println!();
+        }
+
+        if !result.total_times.is_empty() {
+            println!("Total Latency Statistics (Connection + Heartbeat):");
+            println!(
+                "  Average Total Time: {:?}",
+                result.average_total_time
+            );
+
+            let median_total = self.calculate_median(&result.total_times);
+            println!("  Median Total Time: {median_total:?}");
+
+            let p95_total = self.calculate_percentile(&result.total_times, 95.0);
+            println!("  95th Percentile: {p95_total:?}");
+            println!();
+        }
+
         if !result.concurrent_test_results.is_empty() {
             println!("Concurrent Connection Test Results:");
             println!("  Level | Success | Failed | Success Rate | Avg Time | Total Time");
@@ -364,12 +487,22 @@ impl ConnectionPerfTest {
             println!("  ✗ Connection reliability: Poor");
         }
 
-        if result.average_connection_time <= Duration::from_millis(500) {
-            println!("  ✓ Connection speed: Fast");
-        } else if result.average_connection_time <= Duration::from_secs(2) {
-            println!("  ⚠ Connection speed: Moderate");
+        if result.average_total_time <= Duration::from_millis(500) {
+            println!("  ✓ Total latency: Fast");
+        } else if result.average_total_time <= Duration::from_secs(2) {
+            println!("  ⚠ Total latency: Moderate");
         } else {
-            println!("  ✗ Connection speed: Slow");
+            println!("  ✗ Total latency: Slow");
+        }
+
+        if !result.heartbeat_times.is_empty() {
+            if result.average_heartbeat_time <= Duration::from_millis(100) {
+                println!("  ✓ Heartbeat response: Fast");
+            } else if result.average_heartbeat_time <= Duration::from_millis(500) {
+                println!("  ⚠ Heartbeat response: Moderate");
+            } else {
+                println!("  ✗ Heartbeat response: Slow");
+            }
         }
 
         if let Some(best_concurrent) = result
@@ -442,18 +575,18 @@ impl ConnectionPerfTest {
     fn calculate_performance_score(&self, result: &ConnectionPerfResult) -> f64 {
         let success_score = result.connection_success_rate;
 
-        let speed_score = if result.average_connection_time <= Duration::from_millis(500) {
+        let speed_score = if result.average_total_time <= Duration::from_millis(500) {
             100.0
-        } else if result.average_connection_time <= Duration::from_secs(2) {
+        } else if result.average_total_time <= Duration::from_secs(2) {
             70.0
-        } else if result.average_connection_time <= Duration::from_secs(5) {
+        } else if result.average_total_time <= Duration::from_secs(5) {
             40.0
         } else {
             10.0
         };
 
         let consistency_score = {
-            let variance = self.calculate_variance(&result.connection_times);
+            let variance = self.calculate_variance(&result.total_times);
             if variance <= 0.1 {
                 100.0
             } else if variance <= 0.3 {

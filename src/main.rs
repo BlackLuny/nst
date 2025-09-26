@@ -60,7 +60,7 @@ enum Commands {
         #[arg(short, long, default_value = "10")]
         concurrent: usize,
 
-        #[arg(short, long, default_value = "100")]
+        #[arg(short = 'n', long, default_value = "100")]
         total: usize,
     },
 
